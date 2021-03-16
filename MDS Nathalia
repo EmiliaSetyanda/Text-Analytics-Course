@@ -1,0 +1,124 @@
+if (!require("factoextra")) install.packages("factoextra")
+library(dplyr)
+library(ggplot2)
+library(tokenizers)
+library(tibble)
+library(tidyverse)
+library(tidytext)
+library(SnowballC)
+library(tm)
+library(stringi)
+library(ggrepel)
+library("wordcloud")
+library("quanteda")
+if (!require("smacof")) install.packages("smacof")
+if (!require("ggfortify")) install.packages("ggfortify")
+
+data <-read.csv("Womens Clothing E-Commerce Reviews.csv")
+data <- data[,c(1,5)]
+data$Review.Text <- as.character(data$Review.Text)
+
+#Data Clean up##################################################################
+#First stage of cleaning
+data$Review.Text <- as.character(data$Review.Text)  %>% 
+  tolower() %>% 
+  {gsub(":( |-|o)*\\("," SADSMILE ", .)} %>%       # Find :( or :-( or : ( or :o(
+  {gsub(":( |-|o)*\\)"," HAPPYSMILE ", .)} %>%     # Find :) or :-) or : ) or :o)
+  {gsub("(\"| |\\$)-+\\.-+"," NUMBER", .)} %>%     # Find numbers
+  {gsub("([0-9]+:)*[0-9]+ *am"," TIME_AM", .)} %>%         # Find time AM
+  {gsub("([0-9]+:)*[0-9]+ *pm"," TIME_PM", .)} %>%         # Find time PM
+  {gsub("-+:-+","TIME", .)} %>%                    # Find general time
+  {gsub("\\$ ?[0-9]*[\\.,]*[0-9]+"," DOLLARVALUE ", .)} %>%           # Find Dollar values
+  {gsub("[0-9]*[\\.,]*[0-9]+"," NUMBER ", .)} %>%           # Find remaining numbers
+  {gsub("-"," ", .)} %>%                           # Remove all -
+  {gsub("&"," and ", .)} %>%                       # Find general time
+  {gsub("\"+"," ", .)} %>%                         # Remove all "
+  {gsub("\\|+"," ", .)} %>%                        # Remove all |
+  {gsub("_+"," ", .)} %>%                          # Remove all _
+  {gsub(";+"," ", .)} %>%                          # Remove excess ;
+  {gsub(" +"," ", .)} %>%                          # Remove excess spaces
+  {gsub("\\.+","\\.", .)}                          # Remove excess .
+
+# Creating the full review from the cleaned+stemmed words
+j<-1
+for (j in 1:nrow(data)) {
+  stemmed_description<-  anti_join((data[j,] %>% unnest_tokens(word,Review.Text, drop=FALSE,to_lower=TRUE) ),stop_words)
+  
+  stemmed_description<-(wordStem(stemmed_description[,"word"], language = "porter"))
+  
+  data[j,"Review.Text"]<-paste((stemmed_description),collapse = " ")
+  
+}
+
+#cut text into words by splitting on spaces and punctuation & convert all words to lower case
+data_words <- data %>% unnest_tokens(word,Review.Text,to_lower=TRUE) 
+print("number of words after stemming and without stop words") 
+nrow(data_words) #453421
+
+#Count the number of times each word occurs
+counts <- data_words %>%count(word, sort=TRUE) # sort = TRUE for sorting in descending order of n. 
+print("number of unique words after stemming and without stop words")
+nrow(counts) #10591
+
+#Preparation for MDS############################################################
+set.seed(123)
+reviews_corp <- corpus(data, docid_field = "X", text_field = "Review.Text")
+
+# feature cooccurrence matrix
+co_occurrence_matrix <- fcm(x = reviews_corp, context = "document", count = "frequency", tri=FALSE)
+
+#Need number of documents with each word on the diagonal
+reviews_dfm <- dfm(reviews_corp) # get document frequency matrix
+counts <- colSums(as.matrix(reviews_dfm)) 
+co_occurrence_matrix <- as.matrix(co_occurrence_matrix)
+counts <- diag(co_occurrence_matrix) 
+
+sortedcount <- counts%>% sort(decreasing=TRUE)
+sortednames <- names(sortedcount)
+nwords<-200
+subset_words<-as.matrix(sortedcount[1:nwords])
+
+#MDS MAP########################################################################
+co_occurrence_matrix <- co_occurrence_matrix[sortednames[1:nwords],sortednames[1:nwords]]
+co_occurrence_matrix[1:15,1:15] #check
+set.seed(123)
+distances <- sim2diss(co_occurrence_matrix, method = "cooccurrence") # Transform similarities to distances.
+distances[1:15,1:15]
+set.seed(123)
+MDS_map <- smacofSym(distances) # run the routine that finds the best matching coordinates in a 2D mp given the distances
+ggplot(as.data.frame(MDS_map$conf), aes(D1, D2, label = rownames(MDS_map$conf))) +
+  geom_text(check_overlap = TRUE) + theme_minimal(base_size = 15) + xlab('') + ylab('') +
+  scale_y_continuous(breaks = NULL) + scale_x_continuous(breaks = NULL)
+# the conf element in the MDS output contains the coordinates with as names D1 and D2.
+
+#MDS - co-occuring besides each other#########################################################################
+co_occurrence_matrix <- fcm(x = reviews_corp, context = "window", window=1, count = "frequency", tri=FALSE)
+
+co_occurrence_matrix<-co_occurrence_matrix[sortednames[1:nwords],sortednames[1:nwords]]
+
+diag(co_occurrence_matrix) <- counts[sortednames[1:nwords]]
+co_occurrence_matrix[1:15,1:15]
+
+distances <- sim2diss(co_occurrence_matrix, method = "cooccurrence") # Transform similarities to distances.
+min(distances) #check whethet minimum distance is positive. Sometimes the counting procedure did something unexpected.
+max(distances) #check whethet minimum distance is positive. Sometimes the counting procedure did something unexpected.
+MDS_map <- smacofSym(distances) # run the routine that finds the best matching coordinates in a 2D mp given the distances
+ggplot(as.data.frame(MDS_map$conf), aes(D1, D2, label = rownames(MDS_map$conf))) +
+  geom_text(check_overlap = TRUE) + theme_minimal(base_size = 15) + xlab('') + ylab('') +
+  scale_y_continuous(breaks = NULL) + scale_x_continuous(breaks = NULL)
+# the conf element in the MDS output contains the coordinatis with as names D1 and D2.
+
+#MDS - 5 windows co-occuring###########################################################################
+co_occurrence_matrix <- fcm(x = reviews_corp, context = "window", window=5, count = "boolean", tri=FALSE)
+
+co_occurrence_matrix<-co_occurrence_matrix[sortednames[1:nwords],sortednames[1:nwords]]
+
+diag(co_occurrence_matrix) <- counts[sortednames[1:nwords]]
+co_occurrence_matrix[1:15,1:15]
+
+distances <- sim2diss(co_occurrence_matrix, method = "cooccurrence") # Transform similarities to distances.
+MDS_map <- smacofSym(distances) # run the routine that finds the best matching coordinates in a 2D map given the distances
+ggplot(as.data.frame(MDS_map$conf), aes(D1, D2, label = rownames(MDS_map$conf))) +
+  geom_text(check_overlap = TRUE) + theme_minimal(base_size = 15) + xlab('') + ylab('') +
+  scale_y_continuous(breaks = NULL) + scale_x_continuous(breaks = NULL)
+# the conf element in the MDS output contains the coordinatis with as names D1 and D2.
